@@ -32,7 +32,7 @@ class Auction(Base):
     cidade: Mapped[str] = mapped_column(String(200), nullable=False)
     estado: Mapped[str] = mapped_column(String(2), nullable=False)
     id_orgao_origem: Mapped[int] = mapped_column(ForeignKey("pessoas.id"), nullable=False)
-    datas: Mapped[str] = mapped_column(String(65), nullable=False, default="")
+    datas: Mapped[str | None] = mapped_column(String(65), nullable=True, default=None)
     criado_em: Mapped[int] = mapped_column(Integer, nullable=False)
 
     proprietario: Mapped[Person] = relationship(foreign_keys=[id_proprietario])

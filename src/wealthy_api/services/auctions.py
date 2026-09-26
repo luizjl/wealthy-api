@@ -31,7 +31,8 @@ class RelatedRecordConflictError(Exception):
 
 
 def _serialize_dates(values) -> str:
-    return "|".join(value.strftime("%d/%m/%Y") for value in values)
+    serialized = "|".join(value.strftime("%d/%m/%Y") for value in values)
+    return serialized or None
 
 
 def _validate_person_type(person: Person | None, expected: TipoDocumento) -> None:
@@ -60,7 +61,9 @@ def _get_file(session: Session, file_id: int) -> AuctionFile:
 
 def to_auction_read(auction: Auction) -> dict:
     dates = [
-        datetime.strptime(value, "%d/%m/%Y").date() for value in auction.datas.split("|") if value
+        datetime.strptime(value, "%d/%m/%Y").date()
+        for value in (auction.datas or "").split("|")
+        if value.strip()
     ]
     created_at = datetime.fromtimestamp(auction.criado_em / 1000, tz=UTC)
     return {

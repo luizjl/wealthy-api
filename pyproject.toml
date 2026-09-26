@@ -18,6 +18,9 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1.0",
 ]
 
+[project.scripts]
+wealthy-import-properties = "wealthy_api.import_properties:main"
+
 [project.optional-dependencies]
 dev = [
     "httpx>=0.28,<1.0",

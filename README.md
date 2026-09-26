@@ -22,6 +22,16 @@ Set `WEALTHY_FIREBASE_PROJECT_ID` and `WEALTHY_FIREBASE_ALLOWED_UIDS` in `.env`.
 
 The liveness endpoint is available at `/health`; interactive API documentation is at `/docs`. Business endpoints require a valid Firebase ID token and an allowed UID.
 
+## Manual property import
+
+Run the import from the project environment after the CSV is downloaded from Caixa:
+
+```powershell
+.venv\Scripts\wealthy-import-properties.exe "C:\path\to\Lista_imoveis_geral.csv"
+```
+
+The command stages the raw rows, validates and imports them in batches, then reports rejected, duplicate, and reactivated rows. Imports are not scheduled.
+
 ## Tests
 
 ```powershell

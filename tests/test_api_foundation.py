@@ -240,3 +240,160 @@ def test_auction_rejects_people_with_wrong_document_types(people_client: TestCli
     )
 
     assert response.status_code == 422
+
+
+def test_process_requires_existing_person_and_restricts_person_delete(
+    people_client: TestClient,
+) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    missing_person_response = people_client.post(
+        "/api/v1/processos",
+        json={"id_pessoa": 9876, "numero": "100", "assunto": "Cobrança"},
+        headers=headers,
+    )
+    person_response = people_client.post(
+        "/api/v1/pessoas",
+        json={"nome": "Parte", "tipo_documento": "CPF", "numero": "987"},
+        headers=headers,
+    )
+    process_response = people_client.post(
+        "/api/v1/processos",
+        json={
+            "id_pessoa": person_response.json()["id"],
+            "numero": "100",
+            "assunto": "Cobrança",
+        },
+        headers=headers,
+    )
+    person_delete_response = people_client.delete(
+        f"/api/v1/pessoas/{person_response.json()['id']}", headers=headers
+    )
+
+    assert missing_person_response.status_code == 404
+    assert process_response.status_code == 201
+    assert process_response.json()["resumo"] == ""
+    assert process_response.json()["valor"] == 0.0
+    assert process_response.json()["obs"] == ""
+    assert person_delete_response.status_code == 409
+
+
+def test_showcase_update_preserves_created_at_and_advances_updated_at(
+    people_client: TestClient,
+) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    create_response = people_client.post(
+        "/api/v1/vitrines",
+        json={"nome": "Oportunidades", "link": "https://example.com/"},
+        headers=headers,
+    )
+    showcase = create_response.json()
+
+    update_response = people_client.patch(
+        f"/api/v1/vitrines/{showcase['id']}",
+        json={"descricao": "Links úteis"},
+        headers=headers,
+    )
+    invalid_link_response = people_client.post(
+        "/api/v1/vitrines",
+        json={"nome": "Inválida", "link": "ftp://example.com/resource"},
+        headers=headers,
+    )
+
+    assert create_response.status_code == 201
+    assert update_response.status_code == 200
+    assert update_response.json()["criado_em"] == showcase["criado_em"]
+    assert update_response.json()["atualizado_em"] > showcase["atualizado_em"]
+    assert update_response.json()["descricao"] == "Links úteis"
+    assert invalid_link_response.status_code == 422
+
+
+def test_property_filters_include_inactive_properties(people_client: TestClient) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    first = people_client.post(
+        "/api/v1/imoveis",
+        json={
+            "numero": "PROP-1",
+            "uf": "go",
+            "cidade": "Goiania",
+            "bairro": "Centro",
+            "preco": 150,
+            "aceita_financiamento": "não",
+            "modalidade": "Casa",
+            "link_matricula": "http://registry.example/property/1",
+        },
+        headers=headers,
+    )
+    second = people_client.post(
+        "/api/v1/imoveis",
+        json={"numero": "PROP-2", "uf": "SP", "cidade": "Sao Paulo", "preco": 250},
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert first.json()["ativo"] is True
+    assert first.json()["vendido"] is False
+    assert first.json()["aceita_financiamento"] == "nao"
+    assert (
+        people_client.post("/api/v1/imoveis/PROP-1/inativar", headers=headers).json()["ativo"]
+        is False
+    )
+
+    response = people_client.get("/api/v1/imoveis", headers=headers)
+    filtered = people_client.get(
+        "/api/v1/imoveis",
+        params=[
+            ("uf", "GO"),
+            ("uf", "SP"),
+            ("cidadesExcluir", "Goiania"),
+            ("precoMin", "200"),
+            ("precoMax", "300"),
+        ],
+        headers=headers,
+    )
+    invalid_filter = people_client.get("/api/v1/imoveis?uf=XX", headers=headers)
+    invalid_matricula_link = people_client.post(
+        "/api/v1/imoveis",
+        json={"numero": "PROP-HTTPS", "link_matricula": "https://example.com/registry"},
+        headers=headers,
+    )
+
+    assert second.status_code == 201
+    assert response.status_code == 200
+    assert {item["numero"] for item in response.json()["items"]} == {"PROP-1", "PROP-2"}
+    assert (
+        next(item for item in response.json()["items"] if item["numero"] == "PROP-1")["ativo"]
+        is False
+    )
+    assert filtered.status_code == 200
+    assert [item["numero"] for item in filtered.json()["items"]] == ["PROP-2"]
+    assert invalid_filter.status_code == 400
+    assert invalid_matricula_link.status_code == 422
+
+
+def test_favorites_are_idempotent_uid_scoped_and_keep_snapshot(
+    people_client: TestClient,
+) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    created = people_client.post(
+        "/api/v1/imoveis",
+        json={"numero": "FAV-1", "cidade": "Sao Paulo", "uf": "SP"},
+        headers=headers,
+    )
+    favorite_url = "/api/v1/me/favoritos/FAV-1"
+
+    first_put = people_client.put(favorite_url, headers=headers)
+    second_put = people_client.put(favorite_url, headers=headers)
+    inactivated = people_client.post("/api/v1/imoveis/FAV-1/inativar", headers=headers)
+    favorites = people_client.get("/api/v1/me/favoritos", headers=headers)
+    first_delete = people_client.delete(favorite_url, headers=headers)
+    second_delete = people_client.delete(favorite_url, headers=headers)
+
+    assert created.status_code == 201
+    assert first_put.status_code == 200
+    assert second_put.json()["favoritado_em"] == first_put.json()["favoritado_em"]
+    assert inactivated.status_code == 200
+    favorite = favorites.json()["items"][0]
+    assert favorite["imovel"]["ativo"] is True
+    assert favorite["ativo_atual"] is False
+    assert first_delete.status_code == 204
+    assert second_delete.status_code == 204
