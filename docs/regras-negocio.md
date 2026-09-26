@@ -3,7 +3,7 @@
 ## 1) Origem e tratamento de imoveis
 - A fonte oficial dos imoveis é um CSV da Caixa, Lista_imoveis_geral.csv (encoding windows-1252, 
 delimitador ";").
-- O campo linkMatricula e inicializado como vazio na carga do CSV.
+- O campo linkMatricula é inicializado como nulo na carga do CSV.
 - Layout de colunas esperado: numero;uf;cidade;bairro;endereco;preco;valorAvaliacao;desconto;
   financiamento;descricao;modalidade;link.
 - UFs validas sao restritas ao conjunto oficial brasileiro (AC..TO).
@@ -23,8 +23,8 @@ delimitador ";").
   quebrar linha em telas estreitas/retrato, evitando que campos fiquem inacessíveis fora da tela.
 
 ## 3) Validacao de links
-- Links de detalhe/matrícula do imóvel (`salvarLinkMatricula`) só são aceitos se: protocolo HTTPS e
-  host exatamente `venda-imoveis.caixa.gov.br`; link inválido lança ValidationException.
+- Links de detalhe/matrícula do imóvel (`salvarLinkMatricula`) devem usar protocolo HTTP, sem
+  restrição de host; link inválido lança ValidationException.
 - Demais links do app (leilão, URL da matrícula do leilão, arquivo vinculado ao leilão, vitrine)
   exigem apenas protocolo http/https (`^https?://.+`), sem restrição de host.
 

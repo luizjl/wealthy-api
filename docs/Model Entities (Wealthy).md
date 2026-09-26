@@ -2,23 +2,23 @@
 
 
 ### (tabela `imoveis`)
-- numero: String — chave primária natural ("Nº do imóvel")
-- uf: String
-- cidade: String
-- bairro: String
-- endereco: String
-- preco: Double
-- valorAvaliacao: Double (`valor_avaliacao`)
-- desconto: Double
-- aceitaFinanciamento: String (`aceita_financiamento`)
-- descricao: String
-- modalidade: String
-- vendido: Boolean, default false
-- dataDenda: Date, default null
-- valorVenda: Double
-- link: String
-- linkMatricula: String, default null
-- ativo: Booelan, default true
+- numero: String — chave primária natural ("Nº do imóvel"), obrigatório e não nulo
+- uf: String? — pode ser nulo
+- cidade: String? — pode ser nulo
+- bairro: String? — pode ser nulo
+- endereco: String? — pode ser nulo
+- preco: Double? — pode ser nulo
+- valorAvaliacao: Double? (`valor_avaliacao`) — pode ser nulo
+- desconto: Double? — pode ser nulo
+- aceitaFinanciamento: String? (`aceita_financiamento`) — pode ser nulo
+- descricao: String? — pode ser nulo
+- modalidade: String? — pode ser nulo
+- vendido: Boolean, default false, não nulo
+- dataDenda: Date?, default null
+- valorVenda: Double?, default null
+- link: String? — pode ser nulo
+- linkMatricula: String?, default null
+- ativo: Boolean, default true, não nulo
 
 ### (tabela `pessoas`)
 - id: Long, autoGenerate
@@ -61,7 +61,7 @@
 - usuarioId: String
 - numeroImovel: String
 - imovelJson: String — snapshot serializado do ImovelEntity no momento de favoritar
-- favoritadoEm: Long
+- favoritadoEm: Long — timestamp preenchido pelo servidor no momento da criação do favorito
 - PK(usuarioId, numeroImovel)
 
 ### (tabela `vitrines`)
