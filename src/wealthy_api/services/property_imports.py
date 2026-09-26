@@ -95,16 +95,42 @@ def _finish_run(session: Session, run: PropertyImportRun, status: str, error: st
     return run
 
 
+def get_import_run(session: Session, run_id: int) -> PropertyImportRun | None:
+    return import_repository.get_run(session, run_id)
+
+
+def get_import_rows(
+    session: Session,
+    run_id: int,
+    pagina: int,
+    por_pagina: int,
+    row_status: str | None = None,
+):
+    if import_repository.get_run(session, run_id) is None:
+        return None
+    rows, total = import_repository.list_run_rows(
+        session,
+        run_id,
+        (pagina - 1) * por_pagina,
+        por_pagina,
+        row_status,
+    )
+    return rows, total
+
+
 def import_properties_csv(
     session: Session,
     file_path: str | Path,
     *,
     batch_size: int = 500,
+    source_label: str | None = None,
 ) -> PropertyImportRun:
     if batch_size < 1:
         raise ValueError("batch_size deve ser maior que zero")
     source_path = Path(file_path).expanduser()
-    run = import_repository.create_run(session, str(source_path), _now_milliseconds())
+    run = import_repository.create_run(
+        session, source_label or str(source_path), _now_milliseconds()
+    )
     run_id = run.id
 
     try:

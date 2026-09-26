@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from wealthy_api.models.property_import import (
@@ -44,3 +44,26 @@ def log_rows(session: Session, rows: list[PropertyImportRowLog]) -> None:
 
 def get_run(session: Session, run_id: int) -> PropertyImportRun | None:
     return session.get(PropertyImportRun, run_id)
+
+
+def list_run_rows(
+    session: Session,
+    run_id: int,
+    offset: int,
+    limit: int,
+    row_status: str | None = None,
+) -> tuple[list[PropertyImportRowLog], int]:
+    statement = select(PropertyImportRowLog).where(PropertyImportRowLog.run_id == run_id)
+    count_statement = (
+        select(func.count())
+        .select_from(PropertyImportRowLog)
+        .where(PropertyImportRowLog.run_id == run_id)
+    )
+    if row_status:
+        statement = statement.where(PropertyImportRowLog.status == row_status)
+        count_statement = count_statement.where(PropertyImportRowLog.status == row_status)
+    rows = session.scalars(
+        statement.order_by(PropertyImportRowLog.line_number).offset(offset).limit(limit)
+    ).all()
+    total = session.scalar(count_statement) or 0
+    return list(rows), total

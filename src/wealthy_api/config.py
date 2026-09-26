@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     oracle_wallet_location: str | None = None
     oracle_wallet_password: str | None = None
     firebase_project_id: str | None = None
+    firebase_credentials_file: str | None = None
     firebase_allowed_uids: str = ""
+    firebase_admin_uids: str = ""
+    import_max_bytes: int = 100 * 1024 * 1024
     sql_echo: bool = False
 
     @property
@@ -28,6 +31,10 @@ class Settings(BaseSettings):
         return frozenset(
             uid.strip() for uid in self.firebase_allowed_uids.split(",") if uid.strip()
         )
+
+    @property
+    def admin_firebase_uids(self) -> frozenset[str]:
+        return frozenset(uid.strip() for uid in self.firebase_admin_uids.split(",") if uid.strip())
 
 
 @lru_cache

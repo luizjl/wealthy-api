@@ -34,6 +34,20 @@ def test_account_endpoint_requires_a_bearer_token(client: TestClient) -> None:
     assert response.headers["www-authenticate"] == "Bearer"
 
 
+def test_missing_firebase_project_is_service_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_for_missing_project(token, settings):
+        raise security.FirebaseConfigurationError("project ID missing")
+
+    monkeypatch.setattr(security, "verify_firebase_id_token", fail_for_missing_project)
+
+    response = client.get("/api/v1/imoveis", headers={"Authorization": "Bearer test-token"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Autenticação Firebase não configurada no servidor"
+
+
 def test_allowed_firebase_user_can_access_account(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
