@@ -1,0 +1,121 @@
+# Plano de API REST - Wealthy
+
+## 1. Objetivo
+
+Disponibilizar uma API REST versionada para cadastrar, atualizar, consultar e excluir os dados do Wealthy, persistidos em Oracle Autonomous Database (OCI). A API deve documentar seus contratos e permitir testes interativos pelo Swagger UI.
+
+Este documento é uma proposta para validação. Não inclui implementação nem provisionamento de recursos OCI.
+
+## 2. Stack proposta
+
+- **Python 3.12** como versão inicial de referência; confirmar a versão suportada pelo ambiente de deploy escolhido.
+- **FastAPI** para endpoints REST e geração automática de OpenAPI/Swagger UI.
+- **Pydantic v2** para contratos de entrada/saída e validação de payloads.
+- **SQLAlchemy 2.x** para acesso relacional e transações.
+- **python-oracledb** como driver Oracle, conectado ao Autonomous Database com configuração de conexão segura e wallet/credenciais conforme o modo aprovado para OCI.
+- **Alembic** para versionar e aplicar alterações de schema.
+- **pytest** e **httpx** para testes unitários e de integração da API.
+
+A aplicação deve separar rotas, serviços/regras de negócio, repositórios/acesso a dados e modelos de transporte. As rotas não devem concentrar SQL nem regras de validação de domínio.
+
+## 3. Contrato geral da API
+
+- Prefixo e versão: `/api/v1`.
+- JSON em requisições e respostas; datas e horários da API em ISO 8601 com timezone explícito. Manter compatibilidade com os formatos legados onde necessário, convertendo-os na camada de integração.
+- Swagger UI em `/docs` e especificação OpenAPI em `/openapi.json`; ReDoc pode ficar disponível em `/redoc`.
+- Respostas de erro consistentes: `400` para filtros/payloads inválidos, `401/403` para autenticação/autorização, `404` para registro ausente e `409` para conflito de unicidade ou integridade.
+- Paginação de coleções com `pagina` e `porPagina`, inicialmente preservando os limites das regras de imóveis: página mínima 1, tamanho entre 1 e 100. Definir o mesmo padrão para as demais listas.
+- Parâmetros SQL sempre vinculados/parametrizados; não montar SQL por concatenação de entradas.
+- Usar transações para operações que alterem várias tabelas, incluindo exclusão de leilão e seus arquivos.
+
+## 4. Recursos e endpoints propostos
+
+Todos os caminhos abaixo ficam sob `/api/v1`. O contrato final (campos, verbos de atualização e acesso público/administrativo) deve ser confirmado antes da implementação.
+
+| Entidade | Endpoints principais | Regras e observações |
+|---|---|---|
+| Imóveis | `GET /imoveis`, `GET /imoveis/{numero}`, `POST /imoveis`, `PUT/PATCH /imoveis/{numero}`, `DELETE /imoveis/{numero}` | Busca com paginação, UF multi-seleção, cidade, cidades excluídas, bairro, modalidade, financiamento e faixa de preço. Validar UFs e financiamento. `linkMatricula`, quando informado, exige protocolo HTTP, sem restrição de host. Consultas incluem imóveis ativos e inativos; o frontend controla a exibição e apresenta inativos com aspecto desativado. Inativação é uma ação explícita, separada de `DELETE`; definir se a exclusão física será permitida e sob quais condições. Escrita/importação deve ser autorizada; a origem principal é o CSV da Caixa. |
+| Pessoas | `GET/POST /pessoas`, `GET/PUT/PATCH/DELETE /pessoas/{id}` | Exigir nome, tipo de documento e número; tipo `CPF` ou `CNPJ`; `numero` único; contatos opcional. Restringir exclusão quando houver referências por leilões ou processos. |
+| Leilões | `GET/POST /leiloes`, `GET/PUT/PATCH/DELETE /leiloes/{id}` | Validar tipo, campos obrigatórios, UF, links HTTP(S) e até seis datas. Proprietário deve ser pessoa CPF e órgão de origem pessoa CNPJ. Exclusão remove arquivos vinculados em cascata. |
+| Arquivos | `GET/POST /leiloes/{leilaoId}/arquivos`, `GET/PUT/PATCH/DELETE /arquivos/{id}` | Exigir nome, link HTTP(S) e leilão existente. Exclusão do leilão deve apagar seus arquivos em cascata. |
+| Processos | `GET/POST /processos`, `GET/PUT/PATCH/DELETE /processos/{id}` | Exigir pessoa vinculada, número e assunto; pessoa deve existir. Resumo e observação opcionais; valor default `0.0`. |
+| Favoritos | `GET /me/favoritos`, `PUT/DELETE /me/favoritos/{numeroImovel}` | Chave composta por identidade do usuário e número do imóvel; incluir/desincluir deve ser idempotente. Preservar snapshot do imóvel se essa regra for mantida. A identidade deve vir da autenticação, não de um `usuarioId` arbitrário no corpo. |
+| Vitrines | `GET/POST /vitrines`, `GET/PUT/PATCH/DELETE /vitrines/{id}` | Exigir nome e URL HTTP(S); descrição opcional. `criadoEm` é preservado em edição e `atualizadoEm` atualizado pelo servidor. |
+
+### Importação de imóveis
+
+Prever uma operação administrativa de importação em lote executada manualmente (não agendada), devido ao sistema antibot do site da Caixa. Ela deve ler `Lista_imoveis_geral.csv` com encoding Windows-1252 e delimitador `;`. A importação deve validar colunas e UFs, converter tipos, registrar linhas inválidas e usar upsert pela chave `numero`.
+
+## Estratégia em 4 camadas - Importação
+
+Tabela de staging — carrega o CSV cru primeiro, sem validar nada. Se o processo falhar, você nunca perde o dado original.
+Tabela de log de execução — registra cada "run" da importação (início, fim, status, contadores, incluindo imóveis reativados).
+Log linha a linha — para cada registro, guarda se foi importado, rejeitado, duplicado ou reativado, com o motivo do erro quando aplicável.
+Processamento em lote (batch) — insere em blocos (ex.: 500 linhas) com commit por lote, para que um erro no meio não force recomeçar do zero e você saiba exatamente até onde chegou.
+O fluxo fica assim: CSV → staging → validação/transformação → tabela final, com todo erro capturado e registrado no caminho.
+
+
+Na criação/importação inicial, campos que não existem no CSV começam vazios ou nulos: `linkMatricula`, data e valor de venda; `vendido` começa `false` e `ativo`, `true`. Na importação, se um imóvel anteriormente inativo reaparecer no CSV, ele poderá ser reativado. A execução deve destacar essas reativações nos resultados/logs. Ainda falta definir se, nas reimportações, valores já preenchidos no app para `linkMatricula` e dados de venda serão preservados ou limpos.
+
+## 5. Persistência e modelo Oracle
+
+- Criar tabelas relacionais correspondentes às sete entidades e mapear explicitamente os nomes de colunas, tipos, nulabilidade, valores default e restrições.
+- Usar chave natural `imoveis.numero`; IDs gerados para pessoas, leilões, arquivos, processos e vitrines; chave composta `(usuario_id, numero_imovel)` para favoritos.
+- Criar unicidade para `pessoas.numero` e índices para FKs e filtros frequentes de imóveis. Confirmar estratégia de índices após conhecer volume e consultas reais.
+- Definir FKs: leilões para pessoas, processos para pessoas, arquivos para leilões e favoritos para imóveis, com política de exclusão explícita. `arquivos -> leiloes` deve ter cascade conforme as regras.
+- Mapear `imovelJson` como JSON/JSON armazenado em CLOB, conforme compatibilidade e versão/configuração do Oracle Autonomous DB.
+- Usar migrations Alembic em todos os ambientes; não reproduzir o `fallbackToDestructiveMigration` do Room, pois não é apropriado para banco central com dados persistentes.
+- Guardar credenciais e material de conexão OCI em mecanismo de segredos, nunca no repositório. Separar configurações de desenvolvimento, teste e produção.
+
+## 6. Segurança e operação
+
+- Definir autenticação antes de expor endpoints de escrita. Proposta inicial: OAuth2/JWT com autorização por perfil; operações de importação e administração restritas.
+- Aplicar autorização por recurso e obter o usuário de favoritos a partir do principal autenticado. O `usuarioId` hoje gerado no Android não deve, por si só, ser tratado como identidade confiável no servidor.
+- Exigir HTTPS, limitar tamanho de payload e de importação, configurar CORS apenas para origens necessárias e não expor detalhes internos de exceções.
+- Registrar logs estruturados sem tokens, credenciais ou dados pessoais desnecessários; incluir métricas, health check e alertas para falhas de conexão, latência e erros.
+- Publicar a API em ambiente OCI escolhido (por exemplo, container em serviço gerenciado), com rede privada para o Autonomous DB quando aplicável, pool de conexões dimensionado e backups/retention configurados no banco.
+
+## 7. Fases propostas
+
+1. **Validar contrato e decisões em aberto**: autenticação, acesso por perfil, política de exclusão e formato dos dados.
+2. **Definir schema Oracle**: tabelas, constraints, índices, convenções de nomes e migrations iniciais.
+3. **Construir fundação da API**: configuração OCI, sessão/transações, tratamento de erros, autenticação, health check e OpenAPI.
+4. **Implementar entidades relacionais**: pessoas, leilões, arquivos, processos e vitrines, incluindo validações e integridade.
+5. **Implementar imóveis e importação CSV**: filtros, paginação, upsert e política de preservação dos campos editáveis no app.
+6. **Implementar favoritos**: chave composta, identidade autenticada e comportamento do snapshot.
+7. **Testar e publicar**: testes unitários, integração com Oracle de teste, testes de contrato OpenAPI, migração e roteiro de deploy/observabilidade.
+
+## 8. Critérios de aceite propostos
+
+- Os sete recursos possuem operações de consulta e persistência documentadas no Swagger.
+- Validações e restrições descritas nas regras de negócio são cobertas por testes.
+- Consultas de imóveis suportam os filtros definidos, paginação e limites esperados.
+- Integridade referencial e cascata de arquivos são verificadas em Oracle de teste.
+- Importação CSV lida corretamente com Windows-1252 e `;`, e informa erros por linha sem corromper registros válidos.
+- Migrations podem ser aplicadas em banco vazio e em atualização sem apagar dados existentes.
+- Segredos não ficam no código e os endpoints de escrita estão protegidos conforme os perfis acordados.
+
+## 9. Pontos para validação
+
+1. **Autenticação**: a API será consumida apenas pelo app Wealthy ou também por clientes externos? 
+Resposta: A princípio somente o App, mas ele poderá ser instalado em mais dispositivos.
+
+Há provedor OAuth/JWT existente ou devemos propor um? Resposta: irebase Authentication com login Google, novos usuários são autorizados manualmente.
+
+2. **Acesso**: quais consultas serão públicas e quais operações exigem usuário autenticado ou perfil administrativo? Resposta: Tudo privado, usuário deverá ao menos se autenticar de forma simples.
+
+3. **Favoritos**: o escopo continuará sendo por instalação (`usuarioId` do Android) ou será por conta autenticada, sincronizada entre dispositivos? Resposta: Conta autenticada.
+
+4. **Inativação e favoritos de imóveis**: como tratar imóveis inativos nas consultas e nos favoritos?
+Resposta: A inativação será uma ação explícita chamada "Inativar", separada de `DELETE`. As consultas retornarão também imóveis inativos; a exibição e o aspecto desativado serão controlados pelo frontend. Se um imóvel inativo reaparecer em uma nova importação, poderá ser reativado, e essa reativação deve ser destacada nos resultados/logs da importação. O comportamento de `DELETE` ainda precisa ser definido.
+   
+5. **Importação/upsert**: quem executará a importação e como tratar campos ausentes no CSV?
+Resposta: A importação será executada manualmente, sem agendamento, devido ao sistema antibot do site da Caixa. Na criação/importação inicial, `linkMatricula` e data/valor de venda começam vazios ou nulos; `vendido` começa `false` e `ativo`, `true`. Em uma reimportação, ainda falta decidir se valores já preenchidos no app para `linkMatricula` e dados de venda serão preservados ou limpos.
+   
+6. **Compatibilidade**: a API precisa manter os nomes/formats atuais do Android (por exemplo, datas `dd/MM/yyyy` e campos camelCase), ou podemos estabelecer contrato JSON novo e migrar o cliente? 
+Resposta: Não é necessário manter
+
+7. **Oracle/OCI**: já existe tenancy, Autonomous Database, região, ambientes, wallet/secret manager e serviço de deploy definidos? Qual volume inicial estimado de imóveis e acessos?
+Resposta: Já tenho a conta, o banco de dados, a wallet. Ainda preciso configurar o deploy. O acesso será privado, a princípio somente meu, então será pouco volume.
+
+8. **Integridade e modelo**: restringir exclusão de pessoas referenciadas por leilões ou processos. Ainda confirmar `dataDenda` (possível divergência com o conceito `dataVenda`) e nullable/default dos demais campos não especificados. A exclusão física de imóveis também precisa de definição; a ação de inativar é separada.
