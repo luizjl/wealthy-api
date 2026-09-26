@@ -1,0 +1,1 @@
+"""Wealthy REST API package."""
