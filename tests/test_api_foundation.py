@@ -162,3 +162,81 @@ def test_people_patch_and_delete(people_client: TestClient) -> None:
     assert patch_response.json()["contatos"] == "email@example.com"
     assert delete_response.status_code == 204
     assert missing_response.status_code == 404
+
+
+def test_auction_file_is_deleted_with_its_auction(people_client: TestClient) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    owner_response = people_client.post(
+        "/api/v1/pessoas",
+        json={"nome": "Proprietário", "tipo_documento": "CPF", "numero": "111"},
+        headers=headers,
+    )
+    origin_response = people_client.post(
+        "/api/v1/pessoas",
+        json={"nome": "Órgão", "tipo_documento": "CNPJ", "numero": "222"},
+        headers=headers,
+    )
+    auction_response = people_client.post(
+        "/api/v1/leiloes",
+        json={
+            "titulo": "Casa em leilão",
+            "tipo": "CASA",
+            "id_proprietario": owner_response.json()["id"],
+            "link": "https://example.com/leilao",
+            "descricao": "Descrição",
+            "cidade": "Goiânia",
+            "estado": "go",
+            "id_orgao_origem": origin_response.json()["id"],
+            "datas": ["2026-10-01"],
+        },
+        headers=headers,
+    )
+
+    assert auction_response.status_code == 201
+    auction = auction_response.json()
+    assert auction["estado"] == "GO"
+    assert auction["datas"] == ["2026-10-01"]
+
+    file_response = people_client.post(
+        f"/api/v1/leiloes/{auction['id']}/arquivos",
+        json={"nome": "Edital", "link": "https://example.com/edital.pdf"},
+        headers=headers,
+    )
+    file_id = file_response.json()["id"]
+    delete_response = people_client.delete(f"/api/v1/leiloes/{auction['id']}", headers=headers)
+    missing_file_response = people_client.get(f"/api/v1/arquivos/{file_id}", headers=headers)
+
+    assert file_response.status_code == 201
+    assert delete_response.status_code == 204
+    assert missing_file_response.status_code == 404
+
+
+def test_auction_rejects_people_with_wrong_document_types(people_client: TestClient) -> None:
+    headers = {"Authorization": "Bearer test-token"}
+    first_person = people_client.post(
+        "/api/v1/pessoas",
+        json={"nome": "Pessoa", "tipo_documento": "CNPJ", "numero": "333"},
+        headers=headers,
+    )
+    second_person = people_client.post(
+        "/api/v1/pessoas",
+        json={"nome": "Outra", "tipo_documento": "CPF", "numero": "444"},
+        headers=headers,
+    )
+
+    response = people_client.post(
+        "/api/v1/leiloes",
+        json={
+            "titulo": "Leilão",
+            "tipo": "CASA",
+            "id_proprietario": first_person.json()["id"],
+            "link": "https://example.com",
+            "descricao": "Descrição",
+            "cidade": "Goiânia",
+            "estado": "GO",
+            "id_orgao_origem": second_person.json()["id"],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
