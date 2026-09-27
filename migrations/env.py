@@ -10,7 +10,7 @@ from wealthy_api.models import Base
 # access to the values within the .ini file in use.
 config = context.config
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", str(get_database_url(settings)).replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", str(get_database_url()).replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -44,7 +44,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = str(get_database_url(settings))
+    url = str(get_database_url())
     context.configure(
         url=url,
         target_metadata=target_metadata,

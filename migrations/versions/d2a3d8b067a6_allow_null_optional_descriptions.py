@@ -19,16 +19,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def _set_nullable(table_name: str, column_name: str, column_type, nullable: bool) -> None:
-    if op.get_bind().dialect.name == "sqlite":
-        with op.batch_alter_table(table_name) as batch_op:
-            batch_op.alter_column(column_name, existing_type=column_type, nullable=nullable)
-    else:
-        op.alter_column(
-            table_name,
-            column_name,
-            existing_type=column_type,
-            nullable=nullable,
-        )
+    op.alter_column(
+        table_name,
+        column_name,
+        existing_type=column_type,
+        nullable=nullable,
+    )
 
 
 def upgrade() -> None:

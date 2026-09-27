@@ -2,41 +2,14 @@ from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session
 
 from wealthy_api.config import Settings, get_settings
 
 
-def create_database_engine(
-    database_url: str | URL,
-    *,
-    echo: bool = False,
-    connect_args: dict[str, object] | None = None,
-) -> Engine:
-    engine_options: dict[str, object] = {"echo": echo, "pool_pre_ping": True}
-    is_sqlite = str(database_url).startswith("sqlite")
-    if is_sqlite:
-        engine_options["connect_args"] = {"check_same_thread": False}
-    if connect_args:
-        engine_options["connect_args"] = connect_args
-    engine = create_engine(database_url, **engine_options)
-    if is_sqlite:
-        event.listen(engine, "connect", _enable_sqlite_foreign_keys)
-    return engine
-
-
-def _enable_sqlite_foreign_keys(connection, _record) -> None:
-    cursor = connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
-
-
-def get_database_url(settings: Settings | None = None) -> str | URL:
-    settings = settings or get_settings()
-    if settings.database_backend == "sqlite":
-        return settings.database_url
+def get_database_url() -> URL:
     return URL.create("oracle+oracledb")
 
 
@@ -78,14 +51,11 @@ def get_oracle_connect_args(settings: Settings) -> dict[str, object]:
 
 def create_configured_database_engine(settings: Settings | None = None) -> Engine:
     settings = settings or get_settings()
-    connect_args: dict[str, object] | None = None
-    if settings.database_backend == "oracle":
-        connect_args = get_oracle_connect_args(settings)
-
-    return create_database_engine(
-        get_database_url(settings),
+    return create_engine(
+        get_database_url(),
         echo=settings.sql_echo,
-        connect_args=connect_args,
+        pool_pre_ping=True,
+        connect_args=get_oracle_connect_args(settings),
     )
 
 

@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,8 +11,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_backend: Literal["sqlite", "oracle"] = "sqlite"
-    database_url: str = "sqlite+pysqlite:///./wealthy-dev.db"
     oracle_user: str | None = None
     oracle_password: str | None = None
     oracle_dsn: str = "e7h50o2uobc0nl1q_medium"

@@ -11,7 +11,6 @@ def test_oracle_connection_uses_wallet_and_tns_alias(tmp_path: Path) -> None:
     (tmp_path / "ewallet.pem").touch()
     settings = Settings(
         _env_file=None,
-        database_backend="oracle",
         oracle_user="wealthy_app",
         oracle_password="local-test-password",
         oracle_dsn="e7h50o2uobc0nl1q_medium",
@@ -19,7 +18,7 @@ def test_oracle_connection_uses_wallet_and_tns_alias(tmp_path: Path) -> None:
         oracle_wallet_password="local-wallet-password",
     )
 
-    url = get_database_url(settings)
+    url = get_database_url()
     connect_args = get_oracle_connect_args(settings)
 
     assert url.drivername == "oracle+oracledb"
@@ -35,7 +34,6 @@ def test_oracle_wallet_password_can_be_omitted(tmp_path: Path) -> None:
     (tmp_path / "ewallet.pem").touch()
     settings = Settings(
         _env_file=None,
-        database_backend="oracle",
         oracle_user="wealthy_app",
         oracle_password="local-test-password",
         oracle_wallet_location=str(tmp_path),
@@ -47,7 +45,7 @@ def test_oracle_wallet_password_can_be_omitted(tmp_path: Path) -> None:
 
 
 def test_oracle_backend_requires_user_password_and_wallet_path(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, database_backend="oracle")
+    settings = Settings(_env_file=None)
 
     with pytest.raises(ValueError, match="WEALTHY_ORACLE_USER"):
         get_oracle_connect_args(settings)
@@ -56,7 +54,6 @@ def test_oracle_backend_requires_user_password_and_wallet_path(tmp_path: Path) -
 def test_oracle_backend_rejects_missing_wallet_directory() -> None:
     settings = Settings(
         _env_file=None,
-        database_backend="oracle",
         oracle_user="wealthy_app",
         oracle_password="local-test-password",
         oracle_wallet_location="C:/wallet-that-does-not-exist",

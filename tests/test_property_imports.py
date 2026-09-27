@@ -1,16 +1,18 @@
 import json
 from collections.abc import Iterator
 from datetime import date
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from wealthy_api import security
 from wealthy_api.config import Settings, get_settings
-from wealthy_api.database import create_database_engine, get_session
+from wealthy_api.database import get_session
 from wealthy_api.main import app
-from wealthy_api.models import Base, Property, PropertyImportRowLog, PropertyImportStaging
+from wealthy_api.models import Property, PropertyImportRowLog, PropertyImportStaging
 from wealthy_api.services.property_imports import import_properties_csv
 
 CSV_HEADER = (
@@ -20,12 +22,12 @@ CSV_HEADER = (
 
 
 @pytest.fixture
-def admin_client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'admin-import.db'}")
-    Base.metadata.create_all(engine)
-
+def admin_client(
+    oracle_connection: Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
     def override_session() -> Iterator[Session]:
-        with Session(engine) as session:
+        with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
             yield session
 
     app.dependency_overrides[get_session] = override_session
@@ -43,81 +45,83 @@ def admin_client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
-    engine.dispose()
 
 
-def test_csv_import_stages_validates_upserts_and_marks_reactivation(tmp_path) -> None:
+def test_csv_import_stages_validates_upserts_and_marks_reactivation(
+    tmp_path, oracle_connection: Connection
+) -> None:
     csv_file = tmp_path / "Lista_imoveis_geral.csv"
+    property_number = "PROP-" + uuid4().hex[:16]
+    invalid_number = "BAD-" + uuid4().hex[:16]
     first_load = (
-        CSV_HEADER + "PROP-1;GO;Goiânia;Centro;Rua A;1.234,50;2.000,00;30,5%;Não;Casa;Venda;"
+        CSV_HEADER
+        + f"{property_number};GO;Goiânia;Centro;Rua A;1.234,50;2.000,00;30,5%;Não;Casa;Venda;"
         "http://example.com/1\n"
-        + "PROP-BAD;XX;Cidade;Bairro;Rua B;100,00;200,00;10%;Sim;Casa;Venda;"
+        + f"{invalid_number};XX;Cidade;Bairro;Rua B;100,00;200,00;10%;Sim;Casa;Venda;"
         "http://example.com/2\n"
-        + "PROP-1;GO;Goiânia;Centro;Rua C;999,00;1.000,00;20%;Sim;Casa;Venda;"
+        + f"{property_number};GO;Goiânia;Centro;Rua C;999,00;1.000,00;20%;Sim;Casa;Venda;"
         "http://example.com/3\n"
     )
     csv_file.write_bytes(first_load.encode("cp1252"))
 
-    engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'import.db'}")
-    Base.metadata.create_all(engine)
-    try:
-        with Session(engine) as session:
-            first_run = import_properties_csv(session, csv_file, batch_size=2)
+    with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
+        first_run = import_properties_csv(session, csv_file, batch_size=2)
 
-            assert first_run.status == "completed"
-            assert first_run.total_rows == 3
-            assert first_run.inserted_rows == 1
-            assert first_run.rejected_rows == 1
-            assert first_run.duplicate_rows == 1
+        assert first_run.status == "completed"
+        assert first_run.total_rows == 3
+        assert first_run.inserted_rows == 1
+        assert first_run.rejected_rows == 1
+        assert first_run.duplicate_rows == 1
 
-            property_ = session.get(Property, "PROP-1")
-            assert property_ is not None
-            assert property_.preco == 1234.5
-            assert property_.valor_avaliacao == 2000.0
-            assert property_.aceita_financiamento == "nao"
-            assert property_.cidade == "Goiânia"
+        property_ = session.get(Property, property_number)
+        assert property_ is not None
+        assert property_.preco == 1234.5
+        assert property_.valor_avaliacao == 2000.0
+        assert property_.aceita_financiamento == "nao"
+        assert property_.cidade == "Goiânia"
 
-            property_.link_matricula = "http://registry.example/property/1"
-            property_.vendido = True
-            property_.data_denda = date(2026, 9, 1)
-            property_.valor_venda = 1200.0
-            property_.ativo = False
-            session.commit()
+        property_.link_matricula = "http://registry.example/property/1"
+        property_.vendido = True
+        property_.data_denda = date(2026, 9, 1)
+        property_.valor_venda = 1200.0
+        property_.ativo = False
+        session.commit()
 
-            csv_file.write_bytes(
-                (
-                    CSV_HEADER + "PROP-1;GO;Goiânia;Centro;Rua Atualizada;1.500,00;2.100,00;25%;"
-                    "Sim;Descrição atualizada;Venda;http://example.com/1\n"
-                ).encode("cp1252")
-            )
-            second_run = import_properties_csv(session, csv_file, batch_size=1)
+        csv_file.write_bytes(
+            (
+                CSV_HEADER
+                + f"{property_number};GO;Goiânia;Centro;Rua Atualizada;1.500,00;2.100,00;25%;"
+                "Sim;Descrição atualizada;Venda;http://example.com/1\n"
+            ).encode("cp1252")
+        )
+        second_run = import_properties_csv(session, csv_file, batch_size=1)
 
-            assert second_run.status == "completed"
-            assert second_run.updated_rows == 0
-            assert second_run.reactivated_rows == 1
-            session.refresh(property_)
-            assert property_.preco == 1500.0
-            assert property_.ativo is True
-            assert property_.link_matricula == "http://registry.example/property/1"
-            assert property_.vendido is True
-            assert property_.data_denda == date(2026, 9, 1)
-            assert property_.valor_venda == 1200.0
+        assert second_run.status == "completed"
+        assert second_run.updated_rows == 0
+        assert second_run.reactivated_rows == 1
+        session.refresh(property_)
+        assert property_.preco == 1500.0
+        assert property_.ativo is True
+        assert property_.link_matricula == "http://registry.example/property/1"
+        assert property_.vendido is True
+        assert property_.data_denda == date(2026, 9, 1)
+        assert property_.valor_venda == 1200.0
 
-            staged_rows = session.query(PropertyImportStaging).filter_by(run_id=first_run.id).all()
-            row_logs = session.query(PropertyImportRowLog).filter_by(run_id=first_run.id).all()
-            assert len(staged_rows) == 3
-            assert len(row_logs) == 3
-            assert json.loads(staged_rows[0].raw_json)["cidade"] == "Goiânia"
-            assert {row.status for row in row_logs} == {"imported", "rejected", "duplicate"}
-    finally:
-        engine.dispose()
+        staged_rows = session.query(PropertyImportStaging).filter_by(run_id=first_run.id).all()
+        row_logs = session.query(PropertyImportRowLog).filter_by(run_id=first_run.id).all()
+        assert len(staged_rows) == 3
+        assert len(row_logs) == 3
+        assert json.loads(staged_rows[0].raw_json)["cidade"] == "Goiânia"
+        assert {row.status for row in row_logs} == {"imported", "rejected", "duplicate"}
 
 
 def test_admin_import_endpoint_uploads_csv_and_returns_report(
     admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    property_number = "API-" + uuid4().hex[:16]
     csv_content = (
-        CSV_HEADER + "API-1;GO;Goiânia;Centro;Rua A;1.234,50;2.000,00;30,5%;Não;Casa;Venda;"
+        CSV_HEADER
+        + f"{property_number};GO;Goiânia;Centro;Rua A;1.234,50;2.000,00;30,5%;Não;Casa;Venda;"
         "http://example.com/1\n"
     ).encode("cp1252")
     upload = {"file": ("Lista_imoveis_geral.csv", csv_content, "text/csv")}
@@ -153,7 +157,7 @@ def test_admin_import_endpoint_uploads_csv_and_returns_report(
 
     assert rows.status_code == 200
     assert rows.json()["total"] == 1
-    assert rows.json()["items"][0]["numero_imovel"] == "API-1"
+    assert rows.json()["items"][0]["numero_imovel"] == property_number
 
 
 def test_admin_import_endpoint_enforces_upload_size_limit(

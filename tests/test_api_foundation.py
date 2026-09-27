@@ -1,15 +1,16 @@
 from collections.abc import Iterator
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from wealthy_api import security
 from wealthy_api.config import Settings, get_settings
-from wealthy_api.database import create_database_engine, get_session
+from wealthy_api.database import create_configured_database_engine, get_session
 from wealthy_api.main import app
-from wealthy_api.models import Base
 
 
 @pytest.fixture
@@ -77,27 +78,30 @@ def test_authenticated_but_unapproved_user_is_forbidden(
     assert response.status_code == 403
 
 
-def test_sqlalchemy_engine_connects_to_local_sqlite() -> None:
-    engine = create_database_engine("sqlite+pysqlite:///:memory:")
+def test_sqlalchemy_engine_connects_to_oracle() -> None:
+    engine = create_configured_database_engine()
     try:
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT 1")).scalar_one() == 1
+            assert connection.execute(text("SELECT 1 FROM DUAL")).scalar_one() == 1
     finally:
         engine.dispose()
 
 
 @pytest.fixture
-def people_client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    database_path = tmp_path / "people-test.db"
-    engine = create_database_engine(f"sqlite+pysqlite:///{database_path}")
-    Base.metadata.create_all(engine)
-
+def people_client(
+    oracle_connection: Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
     def override_session() -> Iterator[Session]:
-        with Session(engine) as session:
+        with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
             yield session
 
     app.dependency_overrides[get_session] = override_session
-    app.dependency_overrides[get_settings] = lambda: Settings(firebase_allowed_uids="approved-user")
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,
+        firebase_allowed_uids="approved-user",
+        firebase_admin_uids="admin-user",
+    )
     monkeypatch.setattr(
         security,
         "verify_firebase_id_token",
@@ -106,13 +110,13 @@ def people_client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestCli
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    engine.dispose()
 
 
 def test_people_create_and_get(people_client: TestClient) -> None:
+    document_number = uuid4().hex
     create_response = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "  Ana Silva ", "tipo_documento": "CPF", "numero": "123"},
+        json={"nome": "  Ana Silva ", "tipo_documento": "CPF", "numero": document_number},
         headers={"Authorization": "Bearer test-token"},
     )
 
@@ -131,25 +135,38 @@ def test_people_create_and_get(people_client: TestClient) -> None:
 
 def test_people_list_is_paginated(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    baseline = people_client.get("/api/v1/pessoas?pagina=1&porPagina=1", headers=headers).json()[
+        "total"
+    ]
+    document_prefix = uuid4().hex[:16]
+    create_responses = []
     for index in range(3):
-        people_client.post(
-            "/api/v1/pessoas",
-            json={"nome": f"Pessoa {index}", "tipo_documento": "CNPJ", "numero": str(index)},
-            headers=headers,
+        create_responses.append(
+            people_client.post(
+                "/api/v1/pessoas",
+                json={
+                    "nome": f"Pessoa {index}",
+                    "tipo_documento": "CNPJ",
+                    "numero": f"{document_prefix}-{index}",
+                },
+                headers=headers,
+            )
         )
 
-    response = people_client.get("/api/v1/pessoas?pagina=2&porPagina=2", headers=headers)
+    pagina = (baseline + 1) // 2 + 1
+    response = people_client.get(f"/api/v1/pessoas?pagina={pagina}&porPagina=2", headers=headers)
 
     assert response.status_code == 200
-    assert response.json()["total"] == 3
-    assert response.json()["pagina"] == 2
+    assert all(created.status_code == 201 for created in create_responses)
+    assert response.json()["total"] == baseline + 3
+    assert response.json()["pagina"] == pagina
     assert response.json()["porPagina"] == 2
-    assert len(response.json()["items"]) == 1
+    assert len(response.json()["items"]) == 2
 
 
 def test_people_duplicate_document_returns_conflict(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
-    payload = {"nome": "Pessoa", "tipo_documento": "CPF", "numero": "123"}
+    payload = {"nome": "Pessoa", "tipo_documento": "CPF", "numero": uuid4().hex}
     people_client.post("/api/v1/pessoas", json=payload, headers=headers)
 
     response = people_client.post("/api/v1/pessoas", json=payload, headers=headers)
@@ -161,7 +178,7 @@ def test_people_patch_and_delete(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
     create_response = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Pessoa", "tipo_documento": "CNPJ", "numero": "456"},
+        json={"nome": "Pessoa", "tipo_documento": "CNPJ", "numero": uuid4().hex},
         headers=headers,
     )
     person_id = create_response.json()["id"]
@@ -180,14 +197,15 @@ def test_people_patch_and_delete(people_client: TestClient) -> None:
 
 def test_auction_file_is_deleted_with_its_auction(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    number_prefix = uuid4().hex[:16]
     owner_response = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Proprietário", "tipo_documento": "CPF", "numero": "111"},
+        json={"nome": "Proprietário", "tipo_documento": "CPF", "numero": number_prefix},
         headers=headers,
     )
     origin_response = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Órgão", "tipo_documento": "CNPJ", "numero": "222"},
+        json={"nome": "Órgão", "tipo_documento": "CNPJ", "numero": number_prefix + "0"},
         headers=headers,
     )
     auction_response = people_client.post(
@@ -227,14 +245,15 @@ def test_auction_file_is_deleted_with_its_auction(people_client: TestClient) -> 
 
 def test_auction_rejects_people_with_wrong_document_types(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    number_prefix = uuid4().hex[:16]
     first_person = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Pessoa", "tipo_documento": "CNPJ", "numero": "333"},
+        json={"nome": "Pessoa", "tipo_documento": "CNPJ", "numero": number_prefix},
         headers=headers,
     )
     second_person = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Outra", "tipo_documento": "CPF", "numero": "444"},
+        json={"nome": "Outra", "tipo_documento": "CPF", "numero": number_prefix + "0"},
         headers=headers,
     )
 
@@ -260,14 +279,15 @@ def test_process_requires_existing_person_and_restricts_person_delete(
     people_client: TestClient,
 ) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    number = uuid4().hex
     missing_person_response = people_client.post(
         "/api/v1/processos",
-        json={"id_pessoa": 9876, "numero": "100", "assunto": "Cobrança"},
+        json={"id_pessoa": 2_147_483_000, "numero": "100", "assunto": "Cobrança"},
         headers=headers,
     )
     person_response = people_client.post(
         "/api/v1/pessoas",
-        json={"nome": "Parte", "tipo_documento": "CPF", "numero": "987"},
+        json={"nome": "Parte", "tipo_documento": "CPF", "numero": number},
         headers=headers,
     )
     process_response = people_client.post(
@@ -323,12 +343,17 @@ def test_showcase_update_preserves_created_at_and_advances_updated_at(
 
 def test_property_filters_include_inactive_properties(people_client: TestClient) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    property_prefix = uuid4().hex[:16]
+    first_number = f"PROP-{property_prefix}-1"
+    second_number = f"PROP-{property_prefix}-2"
+    first_city = f"Test City {property_prefix}"
+    second_city = f"Other Test City {property_prefix}"
     first = people_client.post(
         "/api/v1/imoveis",
         json={
-            "numero": "PROP-1",
+            "numero": first_number,
             "uf": "go",
-            "cidade": "Goiania",
+            "cidade": first_city,
             "bairro": "Centro",
             "preco": 150,
             "aceita_financiamento": "não",
@@ -339,7 +364,12 @@ def test_property_filters_include_inactive_properties(people_client: TestClient)
     )
     second = people_client.post(
         "/api/v1/imoveis",
-        json={"numero": "PROP-2", "uf": "SP", "cidade": "Sao Paulo", "preco": 250},
+        json={
+            "numero": second_number,
+            "uf": "SP",
+            "cidade": second_city,
+            "preco": 250,
+        },
         headers=headers,
     )
 
@@ -348,7 +378,9 @@ def test_property_filters_include_inactive_properties(people_client: TestClient)
     assert first.json()["vendido"] is False
     assert first.json()["aceita_financiamento"] == "nao"
     assert (
-        people_client.post("/api/v1/imoveis/PROP-1/inativar", headers=headers).json()["ativo"]
+        people_client.post(f"/api/v1/imoveis/{first_number}/inativar", headers=headers).json()[
+            "ativo"
+        ]
         is False
     )
 
@@ -358,7 +390,8 @@ def test_property_filters_include_inactive_properties(people_client: TestClient)
         params=[
             ("uf", "GO"),
             ("uf", "SP"),
-            ("cidadesExcluir", "Goiania"),
+            ("cidade", second_city),
+            ("cidadesExcluir", first_city),
             ("precoMin", "200"),
             ("precoMax", "300"),
         ],
@@ -367,19 +400,23 @@ def test_property_filters_include_inactive_properties(people_client: TestClient)
     invalid_filter = people_client.get("/api/v1/imoveis?uf=XX", headers=headers)
     invalid_matricula_link = people_client.post(
         "/api/v1/imoveis",
-        json={"numero": "PROP-HTTPS", "link_matricula": "https://example.com/registry"},
+        json={
+            "numero": f"PROP-{property_prefix}-HTTPS",
+            "link_matricula": "https://example.com/registry",
+        },
         headers=headers,
     )
 
     assert second.status_code == 201
     assert response.status_code == 200
-    assert {item["numero"] for item in response.json()["items"]} == {"PROP-1", "PROP-2"}
+    result_numbers = {item["numero"] for item in response.json()["items"]}
+    assert {first_number, second_number}.issubset(result_numbers)
     assert (
-        next(item for item in response.json()["items"] if item["numero"] == "PROP-1")["ativo"]
+        next(item for item in response.json()["items"] if item["numero"] == first_number)["ativo"]
         is False
     )
     assert filtered.status_code == 200
-    assert [item["numero"] for item in filtered.json()["items"]] == ["PROP-2"]
+    assert [item["numero"] for item in filtered.json()["items"]] == [second_number]
     assert invalid_filter.status_code == 400
     assert invalid_matricula_link.status_code == 422
 
@@ -388,16 +425,17 @@ def test_favorites_are_idempotent_uid_scoped_and_keep_snapshot(
     people_client: TestClient,
 ) -> None:
     headers = {"Authorization": "Bearer test-token"}
+    property_number = "FAV-" + uuid4().hex[:16]
     created = people_client.post(
         "/api/v1/imoveis",
-        json={"numero": "FAV-1", "cidade": "Sao Paulo", "uf": "SP"},
+        json={"numero": property_number, "cidade": "Sao Paulo", "uf": "SP"},
         headers=headers,
     )
-    favorite_url = "/api/v1/me/favoritos/FAV-1"
+    favorite_url = f"/api/v1/me/favoritos/{property_number}"
 
     first_put = people_client.put(favorite_url, headers=headers)
     second_put = people_client.put(favorite_url, headers=headers)
-    inactivated = people_client.post("/api/v1/imoveis/FAV-1/inativar", headers=headers)
+    inactivated = people_client.post(f"/api/v1/imoveis/{property_number}/inativar", headers=headers)
     favorites = people_client.get("/api/v1/me/favoritos", headers=headers)
     first_delete = people_client.delete(favorite_url, headers=headers)
     second_delete = people_client.delete(favorite_url, headers=headers)
@@ -406,7 +444,9 @@ def test_favorites_are_idempotent_uid_scoped_and_keep_snapshot(
     assert first_put.status_code == 200
     assert second_put.json()["favoritado_em"] == first_put.json()["favoritado_em"]
     assert inactivated.status_code == 200
-    favorite = favorites.json()["items"][0]
+    favorite = next(
+        item for item in favorites.json()["items"] if item["numero_imovel"] == property_number
+    )
     assert favorite["imovel"]["ativo"] is True
     assert favorite["ativo_atual"] is False
     assert first_delete.status_code == 204
