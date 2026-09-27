@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from wealthy_api import security
@@ -113,6 +114,49 @@ def test_csv_import_stages_validates_upserts_and_marks_reactivation(
         assert len(row_logs) == 3
         assert json.loads(staged_rows[0].raw_json)["cidade"] == "Goiânia"
         assert {row.status for row in row_logs} == {"imported", "rejected", "duplicate"}
+
+
+def test_csv_import_logs_integrity_failure_and_continues_batch(
+    tmp_path, oracle_connection: Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing_number = "FAIL-" + uuid4().hex[:16]
+    good_number = "GOOD-" + uuid4().hex[:16]
+    csv_file = tmp_path / "batch-failure.csv"
+    csv_file.write_bytes(
+        (
+            CSV_HEADER + f"{failing_number};GO;Cidade;Bairro;Rua;100;200;10;Sim;Casa;Venda;"
+            "http://example.com/fail\n"
+            + f"{good_number};SP;Cidade;Bairro;Rua;200;300;15;Não;Casa;Venda;"
+            "http://example.com/good\n"
+        ).encode("cp1252")
+    )
+
+    with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
+        original_flush = session.flush
+
+        def fail_selected_property(*args, **kwargs):
+            if any(
+                isinstance(item, Property) and item.numero == failing_number for item in session.new
+            ):
+                raise IntegrityError("insert imovel", {}, RuntimeError("simulated constraint"))
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(session, "flush", fail_selected_property)
+        run = import_properties_csv(session, csv_file, batch_size=2)
+
+        assert run.status == "completed"
+        assert run.inserted_rows == 1
+        assert run.rejected_rows == 1
+        assert session.get(Property, failing_number) is None
+        assert session.get(Property, good_number) is not None
+        row_logs = (
+            session.query(PropertyImportRowLog)
+            .filter_by(run_id=run.id)
+            .order_by(PropertyImportRowLog.line_number)
+            .all()
+        )
+        assert [row.status for row in row_logs] == ["rejected", "imported"]
+        assert "integridade" in (row_logs[0].detail or "")
 
 
 def test_admin_import_endpoint_uploads_csv_and_returns_report(

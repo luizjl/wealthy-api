@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from wealthy_api.models.property import Property
@@ -217,22 +218,41 @@ def import_properties_csv(
 
                 seen_numbers.add(payload.numero)
                 property_ = property_repository.find_property(session, payload.numero)
-                if property_ is None:
-                    session.add(Property(**payload.model_dump()))
+                was_inactive = property_ is not None and not property_.ativo
+                try:
+                    with session.begin_nested():
+                        if property_ is None:
+                            session.add(Property(**payload.model_dump()))
+                            row_status = "imported"
+                        else:
+                            values = payload.model_dump(include=set(CSV_PROPERTY_FIELDS))
+                            for field, value in values.items():
+                                setattr(property_, field, value)
+                            if was_inactive:
+                                property_.ativo = True
+                                row_status = "reactivated"
+                            else:
+                                row_status = "updated"
+                        session.flush()
+                except IntegrityError as error:
+                    rejected += 1
+                    oracle_code = getattr(error.orig, "code", None)
+                    detail = (
+                        f"Falha de integridade ao persistir a linha ({oracle_code})"
+                        if oracle_code
+                        else "Falha de integridade ao persistir a linha"
+                    )
+                    logs.append(
+                        _row_log(run_id, staged.line_number, "rejected", payload.numero, detail)
+                    )
+                    continue
+
+                if row_status == "imported":
                     inserted += 1
-                    row_status = "imported"
+                elif row_status == "reactivated":
+                    reactivated += 1
                 else:
-                    was_inactive = not property_.ativo
-                    values = payload.model_dump(include=set(CSV_PROPERTY_FIELDS))
-                    for field, value in values.items():
-                        setattr(property_, field, value)
-                    if was_inactive:
-                        property_.ativo = True
-                        reactivated += 1
-                        row_status = "reactivated"
-                    else:
-                        updated += 1
-                        row_status = "updated"
+                    updated += 1
                 logs.append(_row_log(run_id, staged.line_number, row_status, payload.numero, None))
 
             import_repository.log_rows(session, logs)

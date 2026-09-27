@@ -6,12 +6,13 @@ Atualizado em 2026-09-26.
 
 - Projeto Python 3.14, FastAPI, SQLAlchemy, Oracle `python-oracledb` Thin e Alembic.
 - API local configurada para Oracle Autonomous Database via wallet e TNS.
-- Revisao Oracle aplicada: `12ffb387e11a` (`head`). `alembic check` havia confirmado nenhum drift antes das ultimas alteracoes de autenticacao.
+- Revisao Oracle aplicada: `12ffb387e11a` (`head`); `alembic check` sem drift.
 - A quota no tablespace `DATA` foi ajustada pelo usuario depois de um `ORA-01950` na primeira migration.
 - A wallet está em `src/conf/oracle_wallet`; o caminho no `.env.oracle` foi corrigido. `src/conf/` está no `.gitignore`.
 - A conexao Oracle foi testada com `SELECT 1 FROM DUAL`. Smoke tests de inserts e FKs executaram em transacoes revertidas; nao deixaram dados de teste.
 - Os migrations criam pessoas, leiloes, arquivos, processos, vitrines, imoveis, favoritos e tabelas de staging/log de importacao.
 - O autogenerate foi configurado para ignorar `DBTOOLS$EXECUTION_HISTORY`; essa tabela foi preservada.
+- Oracle e o unico backend: nao ha fallback, URL ou dependencias SQLite no runtime, testes ou migrations. Configuracoes locais antigas e bancos `.db` temporarios foram removidos.
 
 ## Recursos implementados
 
@@ -33,7 +34,7 @@ Atualizado em 2026-09-26.
 
 ## Ultima verificacao
 
-- Ultima suite completa: 21 testes passaram; Ruff limpo.
+- Ultima suite completa Oracle-only: 23 testes passaram; Ruff limpo.
 - Health respondeu `200`; rota sem token responde `401`. Antes da credencial Admin ser configurada, token de teste respondeu `503` (nao `500`).
 - O JSON de service account em `src/conf/` foi validado estruturalmente sem ler/imprimir a chave; o Project ID foi alinhado ao JSON e `WEALTHY_FIREBASE_CREDENTIALS_FILE` foi configurado em `.env`.
 - A allowlist Firebase foi preenchida. Ainda nao foi testado um Firebase ID token real de usuario permitido.
@@ -56,7 +57,7 @@ Este registro cobre as decisoes e a execucao tecnica substantiva desta conversa;
 
 1. Revisado `docs/plano-api-rest.md` junto com as regras de negocio e modelo. Decisoes confirmadas: API privada, app inicialmente unico em varios dispositivos, favoritos por conta; login Google via Firebase Authentication; novos usuarios autorizados manualmente; contrato JSON novo; importacao do CSV manual por causa do antibot da Caixa; reativacao de imoveis reaparecidos deve ser destacada; imoveis apenas inativados, nunca excluidos fisicamente; consultas incluem ativos e inativos para o frontend decidir exibicao.
 2. Regras de upsert confirmadas: valores de `linkMatricula`, `dataDenda` e `valorVenda` comecam nulos; `vendido=false` e `ativo=true`; campos ausentes do CSV preservam valores existentes. `numero` e obrigatorio, os demais campos vindos do CSV podem ser nulos. `favoritadoEm` e definido pelo servidor. `linkMatricula` aceita HTTP sem restricao de host. Exclusao de pessoas referenciadas deve ser restrita. Deploy OCI fica para depois.
-3. Criada a fundacao FastAPI/SQLAlchemy/Firebase/Alembic, health check e CRUD de pessoas; o runtime e os testes agora usam Oracle.
+3. Criada a fundacao FastAPI/SQLAlchemy/Firebase/Alembic, health check e CRUD de pessoas; inicialmente havia backend SQLite local.
 4. Adicionado suporte Oracle Thin, TNS alias e wallet em `.env.oracle` (ignorado pelo Git). A wallet real fica em `src/conf/oracle_wallet`; a conexao foi validada com `SELECT 1 FROM DUAL`.
 5. Primeira migration Oracle encontrou `ORA-01950` por quota no tablespace `DATA`. Depois da quota ser concedida, a tabela `pessoas` parcial foi inspecionada, estava vazia e consistente, e a revisao foi registrada. Nenhum dado de usuario foi removido.
 6. Implementados CRUD de leiloes e arquivos, validacao CPF/CNPJ, URLs/UF/datas, cascade de arquivos e sequences Oracle. O autogenerate detectou `DBTOOLS$EXECUTION_HISTORY`; a migration foi corrigida para preservar a tabela. Revision `f6cc3e2d182a` aplicada e smoke test com rollback passou.
@@ -67,3 +68,5 @@ Este registro cobre as decisoes e a execucao tecnica substantiva desta conversa;
 11. Investigado erro `500` autenticado: faltava `WEALTHY_FIREBASE_PROJECT_ID`. O handler foi ajustado para `503` em configuracao ausente; sem token continua `401`.
 12. Configurado service account local em `src/conf/`, diretorio ignorado. O Project ID estava como numero e foi corrigido para o identificador textual contido no JSON. O JSON foi validado sem revelar sua chave. A variavel `WEALTHY_FIREBASE_CREDENTIALS_FILE` aponta para esse arquivo local.
 13. A ultima tentativa de reiniciar Uvicorn depois dessa configuracao foi cancelada. Proxima acao: iniciar servidor, testar `/api/v1/imoveis` com token Firebase real de UID permitido e confirmar a resposta de negocio. O deploy e a importacao do CSV real ainda nao foram realizados.
+14. A pedido do usuario, SQLite foi removido completamente do codigo, configuracao, testes, migrations e documentacao ativa. Engine e migrations usam apenas Oracle; testes de integracao conectam ao ADB e revertem as escritas em transacao. Nenhum banco `.db` local foi mantido.
+15. O importador passou a capturar `IntegrityError` por linha via savepoint, registrar a linha como rejeitada e seguir com as outras linhas do batch. Teste simulado confirmou a continuidade.
