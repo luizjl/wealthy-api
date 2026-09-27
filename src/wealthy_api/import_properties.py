@@ -6,21 +6,30 @@ from sqlalchemy.orm import Session
 
 from wealthy_api.database import get_engine
 from wealthy_api.models.property_import import PropertyImportRowLog
-from wealthy_api.services.property_imports import import_properties_csv
+from wealthy_api.services.property_imports import import_properties_csv, resume_import_run
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Importa manualmente o CSV de imóveis da Caixa")
-    parser.add_argument("csv_path", help="Caminho para Lista_imoveis_geral.csv")
+    parser.add_argument("csv_path", nargs="?", help="Caminho para Lista_imoveis_geral.csv")
+    parser.add_argument("--resume-run-id", type=int, help="Retoma o staging de uma execução falha")
     parser.add_argument("--batch-size", type=int, default=500)
     args = parser.parse_args()
 
+    if args.resume_run_id is not None and args.csv_path is not None:
+        parser.error("informe csv_path ou --resume-run-id, não ambos")
+    if args.resume_run_id is None and args.csv_path is None:
+        parser.error("informe csv_path ou --resume-run-id")
+
     with Session(get_engine()) as session:
-        run = import_properties_csv(
-            session,
-            args.csv_path,
-            batch_size=args.batch_size,
-        )
+        if args.resume_run_id is not None:
+            run = resume_import_run(session, args.resume_run_id, batch_size=args.batch_size)
+        else:
+            run = import_properties_csv(
+                session,
+                args.csv_path,
+                batch_size=args.batch_size,
+            )
         logs = session.scalars(
             select(PropertyImportRowLog)
             .where(

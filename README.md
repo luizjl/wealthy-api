@@ -29,7 +29,7 @@ Run the import from the project environment after the CSV is downloaded from Cai
 .venv\Scripts\wealthy-import-properties.exe "C:\Projetos\imoveis\public\Lista_imoveis_geral.csv"
 ```
 
-The command stages the raw rows, validates and imports them in batches, then reports rejected, duplicate, and reactivated rows. Imports are not scheduled.
+The command stages the raw rows, validates and imports them in batches, then reports rejected, duplicate, and reactivated rows. The parser skips blank/metadata lines before the Caixa header and accepts aliases such as `N° do imóvel`, `Valor de avaliação`, `Modalidade de venda` and `Link de acesso`. Imports are not scheduled.
 
 The same import is available to Firebase administrators through `POST /api/v1/admin/imoveis/importacoes` in Swagger using a multipart `file` field; `batch_size` is optional. Set `WEALTHY_FIREBASE_ADMIN_UIDS` to the comma-separated administrator UIDs. The endpoint limit defaults to 100 MiB and can be changed with `WEALTHY_IMPORT_MAX_BYTES`. The endpoint stores the upload temporarily, stages its raw rows in Oracle, and removes the temporary file after processing.
 

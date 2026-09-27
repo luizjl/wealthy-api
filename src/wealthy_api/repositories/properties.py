@@ -8,6 +8,15 @@ def find_property(session: Session, numero: str) -> Property | None:
     return session.get(Property, numero)
 
 
+def find_properties(session: Session, numeros: set[str]) -> dict[str, Property]:
+    properties = {}
+    numbers = list(numeros)
+    for offset in range(0, len(numbers), 900):
+        statement = select(Property).where(Property.numero.in_(numbers[offset : offset + 900]))
+        properties.update({property_.numero: property_ for property_ in session.scalars(statement)})
+    return properties
+
+
 def find_favorite(session: Session, user_id: str, numero: str) -> Favorite | None:
     return session.get(Favorite, {"usuario_id": user_id, "numero_imovel": numero})
 

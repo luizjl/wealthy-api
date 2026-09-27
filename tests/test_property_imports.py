@@ -13,8 +13,13 @@ from wealthy_api import security
 from wealthy_api.config import Settings, get_settings
 from wealthy_api.database import get_session
 from wealthy_api.main import app
-from wealthy_api.models import Property, PropertyImportRowLog, PropertyImportStaging
-from wealthy_api.services.property_imports import import_properties_csv
+from wealthy_api.models import (
+    Property,
+    PropertyImportRowLog,
+    PropertyImportRun,
+    PropertyImportStaging,
+)
+from wealthy_api.services.property_imports import import_properties_csv, resume_import_run
 
 CSV_HEADER = (
     "numero;uf;cidade;bairro;endereco;preco;valorAvaliacao;desconto;"
@@ -114,6 +119,109 @@ def test_csv_import_stages_validates_upserts_and_marks_reactivation(
         assert len(row_logs) == 3
         assert json.loads(staged_rows[0].raw_json)["cidade"] == "Goiânia"
         assert {row.status for row in row_logs} == {"imported", "rejected", "duplicate"}
+
+
+def test_csv_import_finds_caixa_header_after_metadata_rows(
+    tmp_path, oracle_connection: Connection
+) -> None:
+    property_number = "CAIXA-" + uuid4().hex[:16]
+    csv_file = tmp_path / "Lista_imoveis_geral.csv"
+    csv_content = (
+        "\n"
+        "Lista de imóveis da Caixa;;Data de geração:;25/09/2026;;;;;;;;\n"
+        "N° do imóvel;UF;Cidade;Bairro;Endereço;Preço;Valor de avaliação;Desconto;"
+        "Financiamento;Descrição;Modalidade de venda;Link de acesso\n"
+        "\n"
+        f"{property_number};GO;Goiânia;Centro;Rua A;1.234,50;2.000,00;30,5%;Não;"
+        "Casa;Venda;http://example.com/property\n"
+    )
+    csv_file.write_bytes(csv_content.encode("cp1252"))
+
+    with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
+        run = import_properties_csv(session, csv_file, batch_size=10)
+
+        assert run.status == "completed"
+        assert run.total_rows == 1
+        assert run.inserted_rows == 1
+        property_ = session.get(Property, property_number)
+        assert property_ is not None
+        assert property_.cidade == "Goiânia"
+        assert property_.modalidade == "Venda"
+        staged = session.query(PropertyImportStaging).filter_by(run_id=run.id).one()
+        log = session.query(PropertyImportRowLog).filter_by(run_id=run.id).one()
+        assert json.loads(staged.raw_json)["N° do imóvel"] == property_number
+        assert staged.line_number == 5
+        assert log.line_number == 5
+        assert log.status == "imported"
+
+
+def test_resume_import_run_processes_existing_staging_without_creating_run(
+    oracle_connection: Connection,
+) -> None:
+    property_number = "RESUME-" + uuid4().hex[:16]
+    pending_number = "RESUME-" + uuid4().hex[:16]
+    staged_row = {
+        "N° do imóvel": property_number,
+        "UF": "GO",
+        "Cidade": "Goiânia",
+        "Bairro": "Centro",
+        "Endereço": "Rua A",
+        "Preço": "1.234,50",
+        "Valor de avaliação": "2.000,00",
+        "Desconto": "30,5%",
+        "Financiamento": "Não",
+        "Descrição": "Casa",
+        "Modalidade de venda": "Venda",
+        "Link de acesso": "http://example.com/property",
+    }
+
+    with Session(bind=oracle_connection, join_transaction_mode="create_savepoint") as session:
+        run = PropertyImportRun(
+            source_file="Lista_imoveis_geral.csv",
+            status="failed",
+            started_at=1,
+            total_rows=2,
+            inserted_rows=1,
+        )
+        session.add(run)
+        session.flush()
+        session.add(Property(numero=property_number, uf="GO", cidade="Goiânia"))
+        session.add(
+            PropertyImportStaging(
+                run_id=run.id,
+                line_number=3,
+                raw_json=json.dumps(staged_row, ensure_ascii=False),
+            )
+        )
+        pending_row = {**staged_row, "N° do imóvel": pending_number}
+        session.add(
+            PropertyImportStaging(
+                run_id=run.id,
+                line_number=4,
+                raw_json=json.dumps(pending_row, ensure_ascii=False),
+            )
+        )
+        session.add(
+            PropertyImportRowLog(
+                run_id=run.id,
+                line_number=3,
+                numero_imovel=property_number,
+                status="imported",
+            )
+        )
+        session.commit()
+        run_id = run.id
+        runs_before = session.query(PropertyImportRun).count()
+
+        resumed = resume_import_run(session, run_id, batch_size=1)
+
+        assert resumed.status == "completed"
+        assert resumed.total_rows == 2
+        assert resumed.inserted_rows == 2
+        assert session.query(PropertyImportRun).count() == runs_before
+        assert session.get(Property, property_number) is not None
+        assert session.get(Property, pending_number) is not None
+        assert session.query(PropertyImportRowLog).filter_by(run_id=run_id).count() == 2
 
 
 def test_csv_import_logs_integrity_failure_and_continues_batch(
